@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LeGods: The Ascension</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0d1117; /* Dark GitHub-like background */
+        }
+        .main-button {
+            /* Custom styling for the main click button */
+            transition: all 0.1s ease;
+            box-shadow: 0 4px 15px rgba(109, 40, 217, 0.5); /* Purple shadow */
+        }
+        .main-button:active {
+            transform: scale(0.98);
+            box-shadow: 0 2px 10px rgba(109, 40, 217, 0.8);
+        }
+    </style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-4">
+
+    <div id="app" class="w-full max-w-lg bg-gray-800 p-8 rounded-xl shadow-2xl border border-gray-700">
+        <h1 class="text-4xl font-bold text-center text-purple-400 mb-2">LeGods: Ascension</h1>
+        <p class="text-center text-sm text-gray-400 mb-8">Click to gather Aura and ascend!</p>
+
+        <!-- Current Stats Section -->
+        <div class="bg-gray-700 p-4 rounded-lg mb-6 shadow-inner">
+            <div class="flex justify-between items-center mb-2">
+                <span class="text-gray-300">Aura Energy:</span>
+                <span id="auraDisplay" class="text-3xl font-extrabold text-white">0</span>
+            </div>
+            <div class="flex justify-between text-sm text-gray-400">
+                <span>Per Click: <span id="clickPowerDisplay">1</span></span>
+                <span>Per Second: <span id="apsDisplay">0</span></span>
+            </div>
+        </div>
+        
+        <!-- Main Click Button -->
+        <div class="flex justify-center mb-8">
+            <button id="clickButton" class="main-button bg-purple-600 hover:bg-purple-700 text-white font-bold py-6 px-12 rounded-full text-lg focus:outline-none focus:ring-4 focus:ring-purple-500 focus:ring-opacity-50">
+                Tap the Cosmic Energy
+            </button>
+        </div>
+
+        <!-- Upgrades Section -->
+        <h2 class="text-xl font-semibold text-gray-200 mb-4 border-b border-gray-700 pb-2">Ascension Upgrades</h2>
+        <div id="upgradesContainer" class="space-y-3">
+            <!-- Upgrade items will be injected here -->
+        </div>
+
+        <!-- Debug/User ID (Mandatory for multi-user apps) -->
+        <p class="text-xs text-center text-gray-600 mt-6 pt-4 border-t border-gray-700">User ID: <span id="userIdDisplay">Loading...</span></p>
+
+    </div>
+
+    <!-- Firebase SDK Imports -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Set Firebase logging to debug (helpful for troubleshooting)
+        // setLogLevel('Debug');
+
+        // --- GLOBAL VARIABLES & FIREBASE INIT (MANDATORY) ---
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        let firebaseConfig;
+        try {
+            firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        } catch (e) {
+            console.error("Failed to parse firebase config:", e);
+            firebaseConfig = {};
+        }
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let app, db, auth;
+        let userId = 'anonymous'; // Default until authenticated
+        let isAuthReady = false;
+
+        if (Object.keys(firebaseConfig).length > 0) {
+            try {
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+            } catch (e) {
+                console.error("Firebase Initialization Failed:", e);
+            }
+        } else {
+            console.warn("Firebase config is missing or empty. Game state will not be saved.");
+        }
+
+        // --- GAME STATE ---
+        let gameState = {
+            aura: 0,
+            auraPerClick: 1,
+            auraPerSecond: 0,
+            upgrades: {
+                // Key: { name, cost, effect, level, type (click/passive) }
+                basicClick: { name: "Minor Spark", cost: 10, initialCost: 10, multiplier: 1.5, effect: 1, level: 0, type: 'click' },
+                passiveDrone: { name: "Aura Drone", cost: 50, initialCost: 50, multiplier: 1.8, effect: 1, level: 0, type: 'passive' }
+            }
+        };
+
+        const UPGRADES_CONTAINER = document.getElementById('upgradesContainer');
+        const CLICK_BUTTON = document.getElementById('clickButton');
+
+        // --- UI Update Functions ---
+        function updateUI() {
+            document.getElementById('auraDisplay').textContent = formatNumber(gameState.aura);
+            document.getElementById('clickPowerDisplay').textContent = formatNumber(gameState.auraPerClick);
+            document.getElementById('apsDisplay').textContent = formatNumber(gameState.auraPerSecond);
+            updateUpgrades();
+        }
+
+        function formatNumber(num) {
+            if (num < 1000) return num.toString();
+            return num.toPrecision(3);
+        }
+
+        function updateUpgrades() {
+            UPGRADES_CONTAINER.innerHTML = '';
+            for (const key in gameState.upgrades) {
+                const upgrade = gameState.upgrades[key];
+                const buttonDisabled = gameState.aura < upgrade.cost;
+
+                const upgradeDiv = document.createElement('div');
+                upgradeDiv.className = `p-3 rounded-lg flex justify-between items-center transition-colors ${buttonDisabled ? 'bg-gray-800 opacity-50' : 'bg-gray-700 hover:bg-gray-600'}`;
+                
+                upgradeDiv.innerHTML = `
+                    <div>
+                        <p class="text-white font-semibold">${upgrade.name} (Lvl ${upgrade.level})</p>
+                        <p class="text-xs text-gray-400">
+                            ${upgrade.type === 'click' ? `+${formatNumber(upgrade.effect)} Click Power` : `+${formatNumber(upgrade.effect)} Aura/sec`}
+                        </p>
+                    </div>
+                    <button id="buy-${key}" 
+                            class="py-1 px-3 text-sm rounded-full font-bold transition-colors 
+                                ${buttonDisabled ? 'bg-gray-600 text-gray-400 cursor-not-allowed' : 'bg-green-500 hover:bg-green-600 text-white'}"
+                            ${buttonDisabled ? 'disabled' : ''}>
+                        Buy (${formatNumber(upgrade.cost)} Aura)
+                    </button>
+                `;
+                UPGRADES_CONTAINER.appendChild(upgradeDiv);
+
+                // Add event listener to the buy button
+                const buyButton = document.getElementById(`buy-${key}`);
+                if (buyButton) {
+                    buyButton.addEventListener('click', () => buyUpgrade(key));
+                }
+            }
+        }
+
+        // --- Game Logic Functions ---
+        function calculateStats() {
+            let totalClick = 1;
+            let totalPassive = 0;
+
+            for (const key in gameState.upgrades) {
+                const upgrade = gameState.upgrades[key];
+                if (upgrade.level > 0) {
+                    if (upgrade.type === 'click') {
+                        // Base click power is 1, so we add the total effect
+                        totalClick += upgrade.effect * upgrade.level;
+                    } else if (upgrade.type === 'passive') {
+                        totalPassive += upgrade.effect * upgrade.level;
+                    }
+                }
+            }
+            gameState.auraPerClick = totalClick;
+            gameState.auraPerSecond = totalPassive;
+        }
+
+        function clickAura() {
+            gameState.aura += gameState.auraPerClick;
+            updateUI();
+            saveGameState();
+        }
+
+        function buyUpgrade(key) {
+            const upgrade = gameState.upgrades[key];
+            if (gameState.aura >= upgrade.cost) {
+                gameState.aura -= upgrade.cost;
+                upgrade.level += 1;
+                // Exponentially increase the cost
+                upgrade.cost = Math.ceil(upgrade.initialCost * Math.pow(upgrade.multiplier, upgrade.level));
+                
+                // Recalculate stats and update UI
+                calculateStats();
+                updateUI();
+                saveGameState();
+            } else {
+                console.log("Not enough Aura!");
+            }
+        }
+
+        // Passive Aura Generation Loop
+        setInterval(() => {
+            if (gameState.auraPerSecond > 0) {
+                gameState.aura += gameState.auraPerSecond;
+                updateUI();
+                saveGameState(); // Save state on passive generation
+            }
+        }, 1000);
+        
+        // --- Persistence (Firestore) Functions ---
+
+        /**
+         * The Firestore path for this user's private game state.
+         * Path: /artifacts/{appId}/users/{userId}/game_state/progress
+         */
+        function getGameStateDocRef() {
+            if (!db || !userId || !appId) return null;
+            const path = `artifacts/${appId}/users/${userId}/game_state`;
+            return doc(db, path, 'progress');
+        }
+
+        function saveGameState() {
+            if (!isAuthReady) return; // Wait for authentication
+            const docRef = getGameStateDocRef();
+            if (docRef) {
+                // Prepare state to save (remove functions, etc.)
+                const stateToSave = {
+                    aura: gameState.aura,
+                    auraPerClick: gameState.auraPerClick,
+                    auraPerSecond: gameState.auraPerSecond,
+                    upgrades: gameState.upgrades,
+                    lastUpdated: new Date().toISOString()
+                };
+                setDoc(docRef, stateToSave).catch(e => console.error("Error saving game state:", e));
+            } else {
+                console.error("Cannot save: Document reference is null.");
+            }
+        }
+
+        function loadGameState() {
+            if (!isAuthReady) return; // Wait for authentication
+            const docRef = getGameStateDocRef();
+            if (docRef) {
+                // Use onSnapshot for real-time updates and initial load
+                onSnapshot(docRef, (docSnap) => {
+                    if (docSnap.exists()) {
+                        const data = docSnap.data();
+                        
+                        // Load data into gameState, ensuring types are correct
+                        gameState.aura = data.aura || 0;
+                        
+                        // Deep merge upgrades, preserving initial cost/multiplier if not present
+                        for(const key in data.upgrades) {
+                             if(gameState.upgrades[key]) {
+                                 gameState.upgrades[key].cost = data.upgrades[key].cost;
+                                 gameState.upgrades[key].level = data.upgrades[key].level;
+                             }
+                        }
+                        
+                        // Re-calculate stats based on loaded levels
+                        calculateStats(); 
+                        updateUI();
+                        console.log("Game state loaded successfully.");
+                    } else {
+                        // Document doesn't exist, this is the first time playing. Save initial state.
+                        console.log("No saved state found. Saving initial state.");
+                        saveGameState();
+                        updateUI();
+                    }
+                }, (error) => {
+                    console.error("Error setting up snapshot listener:", error);
+                });
+            }
+        }
+
+        // --- Initialization and Authentication ---
+
+        async function initAuth() {
+            if (!auth) {
+                console.error("Auth not initialized. Cannot proceed.");
+                isAuthReady = true;
+                return;
+            }
+
+            try {
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    // Fallback to anonymous sign-in if no token is available
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                console.error("Firebase Sign-in Failed:", error);
+                // If sign-in fails, still mark as ready to allow offline state if possible
+            }
+        }
+
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                userId = user.uid;
+                document.getElementById('userIdDisplay').textContent = userId;
+                isAuthReady = true; // Auth is complete
+                loadGameState(); // Start listening for data
+                console.log("User authenticated:", userId);
+            } else {
+                // User is signed out (this shouldn't happen after the initial signIn call)
+                userId = 'anonymous';
+                document.getElementById('userIdDisplay').textContent = 'Anonymous';
+                isAuthReady = true;
+                console.warn("User signed out.");
+            }
+        });
+
+        // --- Event Listeners and Startup ---
+        window.onload = function () {
+            // Attach main click listener
+            CLICK_BUTTON.addEventListener('click', clickAura);
+
+            // Start the authentication process
+            initAuth();
+
+            // Initial UI update
+            updateUI();
+            calculateStats();
+        };
+
+    </script>
+</body>
+</html>
